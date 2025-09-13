@@ -1,22 +1,21 @@
 import discord
-from discord.ext import tasks, commands
+from discord.ext import tasks
 from discord import app_commands
-from database import get_user, update_balance, c, conn
+from database import get_user, update_balance, update_stats, c, conn
 from deposit import process_deposits
 from config import DISCORD_TOKEN, WITHDRAW_WEBHOOK
 import requests
 import matplotlib.pyplot as plt
 import io
 
-# Import games (no code here, just imports)
+# Import games
 from games import mines, dragontower, chickenroad, blackjack, coinflip, limbo
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-
-bot = commands.Bot(command_prefix="$", intents=intents)
-tree = bot.tree
+bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(bot)
 
 # --- Auto deposit checker ---
 @tasks.loop(minutes=2)
@@ -29,7 +28,6 @@ async def check_deposits():
                 try:
                     await member.send(f"✅ Deposit of ${usd_amount} credited! (txid: {txid})")
                 except:
-                    # Ignore if DM fails
                     pass
 
 # --- Balance ---
@@ -38,7 +36,7 @@ async def balance(interaction: discord.Interaction):
     user = get_user(interaction.user.id)
     embed = discord.Embed(title=f"💰 Balance for {interaction.user}", color=0x00ff99)
     embed.add_field(name="USD", value=f"${user['balance']}", inline=True)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 # --- Withdraw ---
 def notify_withdraw(user_id, amount, currency):
@@ -52,22 +50,22 @@ def notify_withdraw(user_id, amount, currency):
 async def withdraw(interaction: discord.Interaction, amount: float, currency: str = "USD"):
     user = get_user(interaction.user.id)
     if user["balance"] < amount:
-        return await interaction.response.send_message("❌ Not enough balance!", ephemeral=True)
+        return await interaction.response.send_message("❌ Not enough balance!")
     update_balance(interaction.user.id, -amount)
     c.execute("INSERT INTO withdraws (user_id, amount, currency) VALUES (?, ?, ?)",
               (str(interaction.user.id), amount, currency.upper()))
     conn.commit()
     notify_withdraw(interaction.user.id, amount, currency)
-    await interaction.response.send_message(f"📩 Withdraw request of {amount} {currency.upper()} submitted.", ephemeral=True)
+    await interaction.response.send_message(f"📩 Withdraw request of {amount} {currency.upper()} submitted.")
 
-# --- Add dollars (admin) ---
+# --- /adddollars ---
 @tree.command(name="adddollars", description="Add dollars to a user's balance (Admin)")
 @app_commands.describe(user="Target user", amount="Amount to add")
 async def adddollars(interaction: discord.Interaction, user: discord.Member, amount: float):
     update_balance(user.id, amount)
-    await interaction.response.send_message(f"✅ Added ${amount} to {user.mention}'s balance.", ephemeral=True)
+    await interaction.response.send_message(f"✅ Added ${amount} to {user.mention}'s balance.")
 
-# --- Help ---
+# --- /help ---
 @tree.command(name="help", description="Show all commands and instructions")
 async def help(interaction: discord.Interaction):
     embed = discord.Embed(title="🎰 Casino Bot Help", color=0x00ff99)
@@ -75,25 +73,25 @@ async def help(interaction: discord.Interaction):
                     value="/balance — Show balance\n/withdraw <amount> <currency> — Withdraw money",
                     inline=False)
     embed.add_field(name="🎮 Games",
-                    value="/mines <bet> <mines>\n"
-                          "/dragontower <bet>\n"
-                          "/chickenroad <bet> <difficulty>\n"
-                          "/blackjack <bet>\n"
-                          "/coinflip <bet> <choice>\n"
-                          "/limbo <bet>",
+                    value="/mines <bet> <mines> — Play Mines\n"
+                          "/dragontower <bet> — Climb Dragon Tower\n"
+                          "/chickenroad <bet> <difficulty> — Cross Chicken Road (easy, mid, hard, extreme)\n"
+                          "/blackjack <bet> — Play Blackjack\n"
+                          "/coinflip <bet> <choice> — Flip a coin (heads/tails)\n"
+                          "/limbo <bet> — Play Limbo",
                     inline=False)
     embed.add_field(name="📊 Stats",
                     value="/statistics — Show leaderboard and charts",
                     inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
-# --- Statistics ---
+# --- /statistics ---
 @tree.command(name="statistics", description="Show top 5 players and a chart")
 async def statistics(interaction: discord.Interaction):
     c.execute("SELECT user_id, total_won FROM stats ORDER BY total_won DESC LIMIT 5")
     data = c.fetchall()
     if not data:
-        return await interaction.response.send_message("No stats available yet.", ephemeral=True)
+        return await interaction.response.send_message("No stats available yet.")
 
     names = [str(bot.get_user(int(uid))) if bot.get_user(int(uid)) else uid for uid, _ in data]
     wins = [won for _, won in data]
@@ -114,9 +112,8 @@ async def statistics(interaction: discord.Interaction):
     embed.set_image(url="attachment://chart.png")
     await interaction.response.send_message(embed=embed, file=file)
     buf.close()
-    plt.clf()
 
-# --- Games slash commands (no game code here) ---
+# --- Games slash commands ---
 @tree.command(name="mines", description="Play Mines")
 @app_commands.describe(bet="Bet amount", mines="Number of mines")
 async def cmd_mines(interaction: discord.Interaction, bet: float, mines: int):
